@@ -1,0 +1,168 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+from moviepy.editor import VideoClip, vfx
+from moviepy.video.io.bindings import mplfig_to_npimage
+
+# location of the csv file to get the x and y coordinates
+# note that the more points you have, the better the approximation of the picture will be (in general)
+treble = "treble.csv"
+
+# read the data from the file you want to draw (in this case, treble) and extract the x and y coordinates, forming a list of complex numbers, z
+data = pd.read_csv(treble)
+x_list = data['x'].tolist()
+y_list = data['y'].tolist()
+z = [complex(x, y) for x, y in zip(x_list, y_list)]
+
+
+# the basis functions, determined by the frequency n. f(x) = e^(2pi*j*n*x) we use these to build the approximation.
+def exp_func(x, n):
+    return np.e**(2*np.pi*1j*n*x)
+
+
+# integration_inner_product() is the inner product, it integrates the complex exponential from 0 to 1
+# and then multiplies the result by the complex number that corresponds to that time step
+# N.B. this function is hard coded to work with the list of complex numbers created from the x and y points of the drawing,
+# so when it is called there is no need to specify that the integration happens wrt that list of complex numbers
+def integration_inner_product(n, start=0, stop=1, dx=1/len(z)):
+    # define the basis function here so that it is local to the outer function
+    def basis_function(x):
+        return np.e**(2*np.pi*-1j*n*x)
+    # this is here to catch the case where 
+    if len(z) == int((stop-start)/dx):
+        counter = (stop-start)/dx -1
+    else:
+        counter = (stop-start)/dx
+
+    summation = 0
+    # numerical integration using tiny steps of length 1/(length of the list of complex numbers)
+    # basically, you want to integrate over a period of one second, but you also need to step through each point in the drawing
+    # to achieve this, we can just use steps ('dx') of 1/len(z). You can see that dx=1/len(z) in the function parameters
+    while counter > 0:
+        # this is minor, but in the next line, there is no factor of dx. 
+        # That multiplication only needs to happen once, which it does in the return statement. Think of it like factoring out the dx's from all the terms of the sum,
+        # and then multiplying at the end
+        summation += basis_function(start+(counter*dx))*z[int(counter)]
+        counter -= 1
+    return summation*dx
+
+
+# make_nlist() makes a list of frequencies determined by n. 
+# for instance, if n = 3, then we have all the integer frequencies from -3 to 3. 
+# Also, more frequencies = more accurate picture.
+def make_nlist(size):
+    n_list = [n for n in range(-size, size+1)]
+    return n_list 
+
+
+# we need to find the right coefficient for each basis function to provide the right magnitude and phase. 
+# returns the complex coefficients
+def make_clist(n_list):
+    # initialize an empty list to return the coefficients
+    c_list = []
+    for n in n_list:
+        c_list.append(integration_inner_product(n))
+    mid = c_list[len(c_list)//2]
+    c_list[len(c_list)//2] = 0
+    return c_list, mid
+
+# make the list of frequencies and then make the list of coefficients based on the frequency list
+n_list = make_nlist(70)
+c_list, m = make_clist(n_list)
+
+
+# we make a dict from the frequencies and the coefficients so that they can be sorted according to the magnitude of the coefficients
+# we want to sort them to make the animation look better
+# since the vectors would draw out the same picture without this step, there's really no practical benefit. It's just aesthetic
+cn_dict = {n_list[i]: c_list[i] for i in range(len(n_list))}
+cn_sorted = {k: v for k, v in sorted(cn_dict.items(), key=lambda item: abs(item[1]), reverse=True)}
+
+
+# seperate the sorted dict back into sorted lists. we have to account for the fact that the entries in each list are linked to each other, and this is one way to do that.
+# i.e. we can't just sort the c_list
+sorted_n = list(cn_sorted.keys())
+sorted_c = list(cn_sorted.values())
+
+
+# draw_circle is a generic function to draw a circle. we use this later with matplotlib and moviepy. we can give it an x and y position and a radius
+def draw_circle(ax, x, y, r):
+    theta = np.linspace(0, 2*np.pi, 100)
+    z = r*np.exp(1j*theta)
+    ax.plot(z.real+x, z.imag+y, lw=.7, alpha=0.5, c='#34e5eb')
+
+
+# draw_vector() is a generic function to draw the vectors. 
+# we can give it a t, so that it can move with time, an x and y position, a radius, and a phi, which sets the starting position and magnitude
+# it needs two sets of coordinates, the starting point of the vector and the tip of the vector.
+# we pass it the first set, and it calculates the second set. it plots the vector using these two points, but it also returns the second set, 
+# which is useful for stringing them together, as we'll see later.
+def draw_vector(ax, t, x, y, r, phi):
+    # calculate the new x position and the new y position
+    new_x = (r*np.exp(1j*phi*t)).real + x
+    new_y = (r*np.exp(1j*phi*t)).imag + y
+    
+    ax.plot([x, new_x], [y, new_y], lw=.7, alpha=0.5, c='#5eeb34')
+    return new_x, new_y
+
+# set the background to be black
+plt.style.use('dark_background')
+# initialize fig and ax for matplotlib.
+# give it a figsize and dpi to adjust the size of the figure and the resolution. mess around with this to get it right.
+fig, ax = plt.subplots(figsize=(6, 6), dpi=144)
+
+
+# we make a list for x and y coords so that we can keep track of where the trail should be
+temp_x = []
+temp_y = []
+
+
+# this function is the function that moviepy uses to make the animation.
+def make_frame(t):
+    # clear the axes so that we can draw a new picture every frame
+    ax.clear()
+    
+    # grab the coefficients and the frequencies from earlier lines
+    coefficients = sorted_c
+    frequencies = sorted_n
+
+    # start x and y at 0, 0
+    x, y = 0, 0
+    for c, f in zip(coefficients, frequencies):
+        # draw circles and vectors for each of the coefficients at each time step t
+        draw_circle(ax, x, y, c)
+        x, y = draw_vector(ax, t, x, y, c, f)
+        # for only the last vector, add its coords to the temporary x and y lists created above for the trail, and plot those whole lists to see the picture over time.
+        if f == frequencies[-1]:
+            temp_x.append(x)
+            temp_y.append(y)
+            ax.plot(temp_x, temp_y, lw=1, c="#fc0303")
+    
+
+    # set x and y ranges for the axes of the graph
+    ax.set_xlim([-m.real-100, m.real+200])
+    ax.set_ylim([-m.imag-100, m.imag+100])
+    # set the tick marks on the graph to be invisible. this just makes it look a bit nicer
+    plt.xticks([])
+    plt.yticks([])
+
+    # invert the y axis so that the picture is not upside down 
+    # it does this because of some weird arbitrary things when drawing the pictures. if it's not a problem, then remove this line
+    ax.invert_yaxis()
+    ax.set_aspect('equal')
+
+    return mplfig_to_npimage(fig)
+
+
+# func to make the video. for a saved mp4 file, use final_clip.write(). for a preview of the animation, use final_clip.preview()
+# N.B. if you use final_clip.preview(), then you need to have pygame installed to preview the clip
+def play_video(duration):
+    clip = VideoClip(make_frame, duration=duration)
+    # not necessary but is nice to slow down the video
+    final_clip = clip.fx(vfx.speedx, 0.5)
+
+    # final_clip.write_videofile("treble_drawing.mp4", fps=40)
+    final_clip.preview(fps=40)
+
+
+if __name__ == "__main__":
+    play_video(duration=8)
